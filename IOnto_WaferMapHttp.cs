@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using ConnectInfo; // DatabaseInfo, FtpsInfo 사용
 using ITM_Agent.Services;
+using Npgsql;
 
 namespace Onto_WaferMapHttpLib
 {
