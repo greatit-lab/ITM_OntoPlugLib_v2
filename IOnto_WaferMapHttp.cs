@@ -6,9 +6,8 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using ConnectInfo; // DatabaseInfo 사용
+using ConnectInfo; // DatabaseInfo, FtpsInfo 사용
 using ITM_Agent.Services;
-using Npgsql; // NpgsqlConnectionStringBuilder 사용
 
 namespace Onto_WaferMapHttpLib
 {
@@ -52,44 +51,42 @@ namespace Onto_WaferMapHttpLib
             Timeout = TimeSpan.FromSeconds(300)
         };
 
-        // [핵심 해결 1] 메모리 폭증 방지 (최대 동시 작업 3개로 제한)
-        // 수백 개의 파일이 몰리거나 서버가 멈춰도 백그라운드 스레드가 무한정 쌓이는 것을 방지합니다.
+        // 메모리 폭증 방지 (최대 동시 작업 3개로 제한)
         private static readonly SemaphoreSlim _uploadLock = new SemaphoreSlim(3, 3);
-
-        // API 포트 번호
-        private const int ApiPort = 8082;
 
         public string PluginName => "Onto_WaferMapHttp";
         public string DefaultTaskName => "WaferMap";
 
         /// <summary>
-        /// 현재 활성화된 DB 연결 문자열에서 Host IP를 추출하여 API URL을 동적으로 생성합니다.
+        /// FtpsInfo(ConnectInfo)에서 Host와 Port를 읽어와 동적으로 API URL을 생성합니다.
+        /// (내부망 사용 시 Proxy IP와 18081 포트가 자동으로 매핑됩니다.)
         /// </summary>
         private string GetDynamicApiUrl()
         {
             try
             {
-                // 1. 현재 활성화된(Connection.ini에 설정된) DB 연결 문자열 가져오기
-                string connString = DatabaseInfo.CreateDefault().GetConnectionString();
+                // [수정] DB 연결 문자열에 의존하지 않고 FtpsInfo에서 API 서버 정보(Proxy 포함)를 바로 가져옵니다.
+                var ftpInfo = FtpsInfo.CreateDefault();
+                string host = ftpInfo.Host;
+                int port = ftpInfo.Port;
 
-                // 2. 연결 문자열 파싱
-                var builder = new NpgsqlConnectionStringBuilder(connString);
-                string host = builder.Host; // 현재 DB 서버의 IP
+                if (string.IsNullOrEmpty(host))
+                {
+                    host = "127.0.0.1";
+                }
 
-                // 3. API URL 조합
-                return $"http://{host}:{ApiPort}";
+                return $"http://{host}:{port}";
             }
             catch (Exception ex)
             {
-                SimpleLogger.Error($"Failed to derive API URL from DB Connection: {ex.Message}");
-                return $"http://127.0.0.1:{ApiPort}";
+                SimpleLogger.Error($"Failed to derive API URL from FtpsInfo: {ex.Message}");
+                return $"http://127.0.0.1:8082";
             }
         }
 
         public void ProcessAndUpload(string filePath, object settingsPathObj = null, object arg2 = null)
         {
-            // [핵심 해결 2] UI 멈춤 방지 (비동기 백그라운드 작업 분리)
-            // 작업 완료를 기다리지 않고 바로 리턴하여, 메인 화면(UI)이 절대 멈추지 않게 만듭니다.
+            // UI 멈춤 방지 (비동기 백그라운드 작업 분리)
             Task.Run(async () =>
             {
                 // 메모리 보호를 위해 최대 동시 실행 수 대기
@@ -110,7 +107,7 @@ namespace Onto_WaferMapHttpLib
                         return;
                     }
 
-                    // 동적 URL 생성
+                    // 동적 URL 생성 (Proxy 적용 완료)
                     string currentApiUrl = GetDynamicApiUrl();
                     SimpleLogger.Debug($"Target API URL: {currentApiUrl}");
 
@@ -130,12 +127,12 @@ namespace Onto_WaferMapHttpLib
                         return;
                     }
 
-                    // 3. 업로드 및 결과 수신 (UI 멈춤 없이 비동기로 대기)
+                    // 3. 업로드 및 결과 수신
                     string referenceAddress = await UploadFileAsync(currentApiUrl, filePath, sdwt, eqpid).ConfigureAwait(false);
 
                     if (!string.IsNullOrEmpty(referenceAddress))
                     {
-                        // 4. Full URL 조합 (필요 시) 및 DB 적재
+                        // 4. Full URL 조합 및 DB 적재
                         string fullUri = currentApiUrl + referenceAddress;
 
                         // 5. DB 적재
@@ -153,7 +150,7 @@ namespace Onto_WaferMapHttpLib
                 }
                 finally
                 {
-                    // 처리가 끝나면 반드시 락을 해제하여 다음 파일이 처리되도록 함
+                    // 처리가 끝나면 반드시 락을 해제
                     _uploadLock.Release();
                 }
             });
@@ -163,10 +160,8 @@ namespace Onto_WaferMapHttpLib
         {
             try
             {
-                // 타임아웃 5초 설정 유지
                 using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
                 {
-                    // ConfigureAwait(false)를 추가하여 크로스 스레드 데드락 원천 차단
                     var response = await httpClient.GetAsync($"{baseUrl}/api/FileUpload/health", cts.Token).ConfigureAwait(false);
                     return response.IsSuccessStatusCode;
                 }
@@ -178,7 +173,6 @@ namespace Onto_WaferMapHttpLib
             }
         }
 
-        // JSON 파싱 로직 개선 유지
         private async Task<string> UploadFileAsync(string baseUrl, string filePath, string sdwt, string eqpid)
         {
             try
@@ -190,7 +184,6 @@ namespace Onto_WaferMapHttpLib
                     content.Add(new StringContent(sdwt), "sdwt");
                     content.Add(new StringContent(eqpid), "eqpid");
 
-                    // 데드락 방지 ConfigureAwait(false)
                     var response = await httpClient.PostAsync($"{baseUrl}/api/FileUpload/upload", content).ConfigureAwait(false);
 
                     if (response.IsSuccessStatusCode)
@@ -198,7 +191,6 @@ namespace Onto_WaferMapHttpLib
                         var responseString = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                         using (var jsonDoc = JsonDocument.Parse(responseString))
                         {
-                            // 대소문자 구분 없이 "referenceAddress" 속성 찾기
                             foreach (var prop in jsonDoc.RootElement.EnumerateObject())
                             {
                                 if (prop.Name.Equals("referenceAddress", StringComparison.OrdinalIgnoreCase))
@@ -207,7 +199,6 @@ namespace Onto_WaferMapHttpLib
                                 }
                             }
 
-                            // 키를 찾지 못한 경우 응답 내용 로깅
                             SimpleLogger.Error($"[Upload] JSON Key 'referenceAddress' not found. Server response: {responseString}");
                             return null;
                         }
