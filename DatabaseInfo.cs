@@ -79,9 +79,9 @@ namespace ConnectInfo
                             var builder = new NpgsqlConnectionStringBuilder(plainConnectionString);
                             builder.Host = proxyIp;
                             builder.Port = 15432; // Proxy DB 포트로 강제 치환
-                            
+
                             // [핵심 추가] 프록시 환경에서 연결이 유휴 상태일 때 끊기는 현상을 방지하기 위해 풀링 강제 해제
-                            builder.Pooling = false; 
+                            builder.Pooling = false;
 
                             plainConnectionString = builder.ConnectionString;
                         }
@@ -223,7 +223,7 @@ namespace ConnectInfo
         public void TestConnection()
         {
             Console.WriteLine($"[DB] Connection Check Start...");
-            string cs = GetConnectionString(); 
+            string cs = GetConnectionString();
             Console.WriteLine($"[DB] ConnectionString (Masked) ▶ {Regex.Replace(cs, "Password=.*", "Password=***")}");
 
             using (var conn = new NpgsqlConnection(cs))
@@ -290,7 +290,7 @@ namespace ConnectInfo
         public int Port => GetFtpConfig()?.Port ?? 21;
         public string Username => GetFtpConfig()?.Username;
         public string Password => GetFtpConfig()?.Password;
-        public string UploadPath => "/"; 
+        public string UploadPath => "/";
 
         private FtpsInfo() { }
         public static FtpsInfo CreateDefault() => new FtpsInfo();
