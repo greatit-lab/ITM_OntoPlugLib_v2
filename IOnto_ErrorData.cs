@@ -665,7 +665,7 @@ namespace Onto_ErrorDataLib
         #endregion
 
         #region === Utility ===
-        
+
         private static string GetEqpidFromSettings(string iniPath)
         {
             try
