@@ -58,7 +58,7 @@ namespace Onto_ErrorDataLib
         private static readonly Dictionary<string, long> _lastLen =
             new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
 
-        // [핵심 추가] 충돌 방지를 위한 지연 처리(Debounce) 큐 및 타이머
+        // 충돌 방지를 위한 지연 처리(Debounce) 큐 및 타이머
         private static readonly ConcurrentDictionary<string, string> _pendingEqpids = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, DateTime> _pendingProcessTime = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private static Timer _batchTimer;
@@ -86,12 +86,12 @@ namespace Onto_ErrorDataLib
             string eqpid = GetEqpidFromSettings(arg1 as string ?? "Settings.ini");
             _pendingEqpids[filePath] = eqpid;
 
-            // [핵심 방어] 즉시 읽지 않고, 30초 뒤에 읽도록 큐에 예약합니다.
-            // 에러가 다발성으로 쏟아지는 동안에는 Agent가 파일에 접근하지 않게 됩니다.
-            if (_pendingProcessTime.TryAdd(filePath, DateTime.Now.AddSeconds(30)))
-            {
-                SimpleLogger.Debug($"Event received. File queued for delayed processing (30s delay): {Path.GetFileName(filePath)}");
-            }
+            // ⭐️ [변경 핵심] TryAdd를 인덱서(=)로 변경하여 Sliding Window(타이머 리셋) 구현
+            // 장비가 계속 에러를 쓰면서 이벤트를 발생시키면, 대기 시간이 계속 30초 뒤로 밀려납니다.
+            // 즉, 장비가 쓰기를 "완전히 멈추고 30초가 지났을 때만" 파일에 접근합니다.
+            _pendingProcessTime[filePath] = DateTime.Now.AddSeconds(30);
+            
+            SimpleLogger.Debug($"Event received. Timer reset. File queued for processing (waiting for 30s idle): {Path.GetFileName(filePath)}");
         }
 
         #endregion
@@ -109,7 +109,7 @@ namespace Onto_ErrorDataLib
 
                 foreach (var kvp in _pendingProcessTime)
                 {
-                    // 예약된 30초가 경과한 파일들만 추출
+                    // 예약된 30초가 완전히 경과한(장비가 조용해진) 파일들만 추출
                     if (now >= kvp.Value)
                     {
                         filesToProcess.Add(kvp.Key);
@@ -143,7 +143,6 @@ namespace Onto_ErrorDataLib
             byte[] fileBuffer = null;
             long bytesToRead = 0;
 
-            // 재시도 횟수 축소 (장비와 충돌 시 무리하게 싸우지 않고 바로 양보)
             int maxRetries = 2; 
             int delayMs = 100;
             bool fileReadSuccess = false;
@@ -157,28 +156,38 @@ namespace Onto_ErrorDataLib
                         _lastLen.TryGetValue(filePath, out prevLen);
                     }
 
-                    using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                    // 파일 핸들(Lock)을 쥐기 전에 OS 파일 시스템(MFT) 정보만 읽어 크기 계산
+                    var fi = new FileInfo(filePath);
+                    if (!fi.Exists)
                     {
-                        currLen = fs.Length;
+                        SimpleLogger.Debug("File disappeared: " + filePath);
+                        lock (_lastLen) { _lastLen.Remove(filePath); }
+                        return;
+                    }
+                    currLen = fi.Length;
 
-                        if (currLen == prevLen && prevLen > 0)
-                        {
-                            SimpleLogger.Debug("File length unchanged, skipping incremental process: " + filePath);
-                            return;
-                        }
+                    if (currLen == prevLen && prevLen > 0)
+                    {
+                        SimpleLogger.Debug("File length unchanged, skipping incremental process: " + filePath);
+                        return;
+                    }
 
-                        if (currLen < prevLen)
-                        {
-                            SimpleLogger.Event("File truncated (Size decreased). Resetting offset: " + filePath);
-                            prevLen = 0;
-                        }
+                    if (currLen < prevLen)
+                    {
+                        SimpleLogger.Event("File truncated (Size decreased). Resetting offset: " + filePath);
+                        prevLen = 0;
+                    }
 
-                        bytesToRead = currLen - prevLen;
-                        if (bytesToRead > 0)
+                    bytesToRead = currLen - prevLen;
+                    if (bytesToRead > 0)
+                    {
+                        fileBuffer = new byte[bytesToRead];
+
+                        // 가장 빠른 SequentialScan 옵션 적용, 열자마자 메모리로 들이마시고 즉각 블록 탈출
+                        using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.SequentialScan))
                         {
-                            fileBuffer = new byte[bytesToRead];
                             fs.Seek(prevLen, SeekOrigin.Begin);
-
+                            
                             int totalRead = 0;
                             while (totalRead < bytesToRead)
                             {
@@ -186,8 +195,9 @@ namespace Onto_ErrorDataLib
                                 if (read == 0) break;
                                 totalRead += read;
                             }
-                        }
+                        } 
                     }
+
                     fileReadSuccess = true;
                     break;
                 }
@@ -195,12 +205,6 @@ namespace Onto_ErrorDataLib
                 {
                     SimpleLogger.Debug($"File locked by equipment, retry {i + 1}: {ioEx.Message}");
                     Thread.Sleep(delayMs);
-                }
-                catch (FileNotFoundException)
-                {
-                    SimpleLogger.Debug("File not found (maybe deleted): " + filePath);
-                    lock (_lastLen) { _lastLen.Remove(filePath); }
-                    return;
                 }
                 catch (Exception ex)
                 {
@@ -212,10 +216,10 @@ namespace Onto_ErrorDataLib
 
             if (!fileReadSuccess)
             {
-                // [핵심 예외 처리] 장비가 파일을 강하게 물고 있으면, 큐에 다시 밀어넣어 10초 뒤에 재시도
+                // 장비가 파일을 강하게 물고 있으면, 큐에 다시 밀어넣어 10초 뒤에 재시도
                 SimpleLogger.Error($"File is heavily locked by equipment. Yielding and re-queuing for later: {filePath}");
                 _pendingEqpids[filePath] = eqpid;
-                _pendingProcessTime.TryAdd(filePath, DateTime.Now.AddSeconds(10));
+                _pendingProcessTime[filePath] = DateTime.Now.AddSeconds(10);
                 return;
             }
 
