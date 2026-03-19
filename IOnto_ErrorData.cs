@@ -76,7 +76,7 @@ namespace Onto_ErrorDataLib
                 Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
             #endif
             // 10초 주기로 지연된 파일이 있는지 검사하는 백그라운드 타이머 작동
-            _batchTimer = new Timer(OnBatchTimer, null, 10000, 10000); 
+            _batchTimer = new Timer(OnBatchTimer, null, 10000, 10000);
         }
 
         #region === Public API ===
@@ -90,7 +90,7 @@ namespace Onto_ErrorDataLib
             // 장비가 계속 에러를 쓰면서 이벤트를 발생시키면, 대기 시간이 계속 30초 뒤로 밀려납니다.
             // 즉, 장비가 쓰기를 "완전히 멈추고 30초가 지났을 때만" 파일에 접근합니다.
             _pendingProcessTime[filePath] = DateTime.Now.AddSeconds(30);
-            
+
             SimpleLogger.Debug($"Event received. Timer reset. File queued for processing (waiting for 30s idle): {Path.GetFileName(filePath)}");
         }
 
@@ -143,7 +143,7 @@ namespace Onto_ErrorDataLib
             byte[] fileBuffer = null;
             long bytesToRead = 0;
 
-            int maxRetries = 2; 
+            int maxRetries = 2;
             int delayMs = 100;
             bool fileReadSuccess = false;
 
@@ -187,7 +187,7 @@ namespace Onto_ErrorDataLib
                         using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.SequentialScan))
                         {
                             fs.Seek(prevLen, SeekOrigin.Begin);
-                            
+
                             int totalRead = 0;
                             while (totalRead < bytesToRead)
                             {
@@ -195,7 +195,7 @@ namespace Onto_ErrorDataLib
                                 if (read == 0) break;
                                 totalRead += read;
                             }
-                        } 
+                        }
                     }
 
                     fileReadSuccess = true;
@@ -284,7 +284,7 @@ namespace Onto_ErrorDataLib
         #endregion
 
         #region === Core Data Processing & DB Helpers ===
-        
+
         private static string NormalizeErrorId(object v)
         {
             if (v == null || v == DBNull.Value) return string.Empty;
