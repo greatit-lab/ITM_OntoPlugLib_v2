@@ -24,7 +24,7 @@ namespace ConnectInfo
         public int Port { get; set; }
         public string Username { get; set; }
         public string Password { get; set; }
-        
+
         // [핵심 추가] Proxy 치환 전의 원본 서버 정보를 보관합니다.
         [JsonIgnore] public string OriginalHost { get; set; }
         [JsonIgnore] public int OriginalPort { get; set; }
