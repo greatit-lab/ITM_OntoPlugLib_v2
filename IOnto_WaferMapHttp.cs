@@ -60,13 +60,12 @@ namespace Onto_WaferMapHttpLib
 
         /// <summary>
         /// FtpsInfo(ConnectInfo)에서 Host와 Port를 읽어와 동적으로 API URL을 생성합니다.
-        /// (내부망 사용 시 Proxy IP와 18081 포트가 자동으로 매핑됩니다.)
+        /// (파일 업로드 전용: 내부망 사용 시 Proxy IP와 18081 포트가 자동으로 매핑됩니다.)
         /// </summary>
         private string GetDynamicApiUrl()
         {
             try
             {
-                // [수정] DB 연결 문자열에 의존하지 않고 FtpsInfo에서 API 서버 정보(Proxy 포함)를 바로 가져옵니다.
                 var ftpInfo = FtpsInfo.CreateDefault();
                 string host = ftpInfo.Host;
                 int port = ftpInfo.Port;
@@ -81,6 +80,32 @@ namespace Onto_WaferMapHttpLib
             catch (Exception ex)
             {
                 SimpleLogger.Error($"Failed to derive API URL from FtpsInfo: {ex.Message}");
+                return $"http://127.0.0.1:8082";
+            }
+        }
+
+        /// <summary>
+        /// [핵심 추가] 웹 백엔드가 접근할 수 있도록, Proxy 치환 전의 순수 원본 API URL을 가져옵니다.
+        /// (DB 기록 전용)
+        /// </summary>
+        private string GetOriginalApiUrl()
+        {
+            try
+            {
+                var ftpInfo = FtpsInfo.CreateDefault();
+                string host = ftpInfo.OriginalHost;
+                int port = ftpInfo.OriginalPort;
+
+                if (string.IsNullOrEmpty(host))
+                {
+                    host = "127.0.0.1";
+                }
+
+                return $"http://{host}:{port}";
+            }
+            catch (Exception ex)
+            {
+                SimpleLogger.Error($"Failed to derive Original API URL from FtpsInfo: {ex.Message}");
                 return $"http://127.0.0.1:8082";
             }
         }
@@ -108,11 +133,12 @@ namespace Onto_WaferMapHttpLib
                         return;
                     }
 
-                    // 동적 URL 생성 (Proxy 적용 완료)
+                    // [수정] 업로드용 동적 URL(Proxy 가능)과 DB적재용 원본 URL을 분리 생성
                     string currentApiUrl = GetDynamicApiUrl();
-                    SimpleLogger.Debug($"Target API URL: {currentApiUrl}");
+                    string originalApiUrl = GetOriginalApiUrl();
+                    SimpleLogger.Debug($"Target Upload API URL: {currentApiUrl}");
 
-                    // 1. Health Check (UI 멈춤 없이 비동기로 체크 대기)
+                    // 1. Health Check (UI 멈춤 없이 비동기로 체크 대기) - 프록시 주소로 검사
                     bool isServerHealthy = await CheckServerHealthAsync(currentApiUrl).ConfigureAwait(false);
                     if (!isServerHealthy)
                     {
@@ -128,13 +154,13 @@ namespace Onto_WaferMapHttpLib
                         return;
                     }
 
-                    // 3. 업로드 및 결과 수신
+                    // 3. 업로드 및 결과 수신 (실제 업로드는 Proxy 주소 사용)
                     string referenceAddress = await UploadFileAsync(currentApiUrl, filePath, sdwt, eqpid).ConfigureAwait(false);
 
                     if (!string.IsNullOrEmpty(referenceAddress))
                     {
-                        // 4. Full URL 조합 및 DB 적재
-                        string fullUri = currentApiUrl + referenceAddress;
+                        // 4. Full URL 조합 및 DB 적재 ([핵심 수정] DB 기록에는 메인망에서 접근가능한 원본 주소 사용)
+                        string fullUri = originalApiUrl + referenceAddress;
 
                         // 5. DB 적재
                         InsertToDatabase(filePath, eqpid, fullUri);
@@ -142,7 +168,7 @@ namespace Onto_WaferMapHttpLib
                         // 6. 삭제
                         TryDeleteLocalFile(filePath);
 
-                        SimpleLogger.Event($"SUCCESS - Uploaded to {currentApiUrl}");
+                        SimpleLogger.Event($"SUCCESS - Uploaded to {currentApiUrl}, Recorded as {fullUri}");
                     }
                 }
                 catch (Exception ex)
