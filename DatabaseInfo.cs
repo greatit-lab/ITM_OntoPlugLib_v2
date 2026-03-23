@@ -24,6 +24,10 @@ namespace ConnectInfo
         public int Port { get; set; }
         public string Username { get; set; }
         public string Password { get; set; }
+        
+        // [핵심 추가] Proxy 치환 전의 원본 서버 정보를 보관합니다.
+        [JsonIgnore] public string OriginalHost { get; set; }
+        [JsonIgnore] public int OriginalPort { get; set; }
     }
 
     public sealed class DatabaseInfo
@@ -80,7 +84,6 @@ namespace ConnectInfo
                             builder.Host = proxyIp;
                             builder.Port = 15432; // Proxy DB 포트로 강제 치환
 
-                            // [핵심 추가] 프록시 환경에서 연결이 유휴 상태일 때 끊기는 현상을 방지하기 위해 풀링 강제 해제
                             builder.Pooling = false;
 
                             plainConnectionString = builder.ConnectionString;
@@ -112,9 +115,6 @@ namespace ConnectInfo
             catch { return null; }
         }
 
-        /// <summary>
-        /// Settings.ini에서 값을 읽어오기 위한 헬퍼 메서드
-        /// </summary>
         public static string GetSettingsIniValue(string section, string key)
         {
             try
@@ -150,7 +150,7 @@ namespace ConnectInfo
                 try
                 {
                     using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                    using (var sr = new StreamReader(fs, Encoding.UTF8))
+                    using (var sr = new StreamReader(fs, true))
                     {
                         return sr.ReadToEnd();
                     }
@@ -262,6 +262,10 @@ namespace ConnectInfo
                     string plainJson = DecryptAES_Internal(encryptedFtpConfig, AgentCryptoConfig.AES_COMMON_KEY);
                     var config = JsonConvert.DeserializeObject<FtpConfig>(plainJson);
 
+                    // [핵심 추가] Proxy 치환 전의 원본(Original) 서버 주소와 포트를 미리 저장해둡니다.
+                    config.OriginalHost = config.Host;
+                    config.OriginalPort = config.Port;
+
                     // Settings.ini의 Proxy 설정 읽기 및 동적 스와핑
                     if (DatabaseInfo.GetSettingsIniValue("Network", "UseProxy") == "1")
                     {
@@ -291,6 +295,10 @@ namespace ConnectInfo
         public string Username => GetFtpConfig()?.Username;
         public string Password => GetFtpConfig()?.Password;
         public string UploadPath => "/";
+
+        // [핵심 추가] DB 기록용 원본 주소를 외부로 노출합니다.
+        public string OriginalHost => GetFtpConfig()?.OriginalHost;
+        public int OriginalPort => GetFtpConfig()?.OriginalPort ?? 8082;
 
         private FtpsInfo() { }
         public static FtpsInfo CreateDefault() => new FtpsInfo();
