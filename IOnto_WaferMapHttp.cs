@@ -207,9 +207,12 @@ namespace Onto_WaferMapHttpLib
                 using (var content = new MultipartFormDataContent())
                 using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
                 {
+                    // 파일 파트
                     content.Add(new StreamContent(fileStream), "file", Path.GetFileName(filePath));
-                    content.Add(new StringContent(sdwt), "sdwt");
-                    content.Add(new StringContent(eqpid), "eqpid");
+                    
+                    // ⭐️ [핵심 수정] sdwt(예: 한글 공정명)와 eqpid 전송 시 한글 깨짐 방지를 위해 명시적으로 UTF-8 인코딩 지정
+                    content.Add(new StringContent(sdwt ?? "", Encoding.UTF8), "sdwt");
+                    content.Add(new StringContent(eqpid ?? "", Encoding.UTF8), "eqpid");
 
                     var response = await httpClient.PostAsync($"{baseUrl}/api/FileUpload/upload", content).ConfigureAwait(false);
 
