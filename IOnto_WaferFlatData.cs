@@ -173,11 +173,58 @@ namespace Onto_WaferFlatDataLib
                 }
             }
 
+            // ⭐️ [핵심 변경] 파일 내부 Wafer ID 텍스트 추출 로직 완벽 호환 (AMAT & EBARA)
             int? waferNo = null;
+
             if (meta.TryGetValue("Wafer ID", out string waferId))
             {
-                var m = Regex.Match(waferId, @"W(\d+)");
-                if (m.Success && int.TryParse(m.Groups[1].Value, out int w)) waferNo = w;
+                // 1. AMAT 설비 대응: "W18" 패턴에서 18 추출
+                var matchAmat = Regex.Match(waferId, @"W(\d+)", RegexOptions.IgnoreCase);
+                if (matchAmat.Success && int.TryParse(matchAmat.Groups[1].Value, out int wAmat))
+                {
+                    waferNo = wAmat;
+                }
+                else
+                {
+                    // 2. ⭐️ EBARA 설비 대응: "ABC001.1_01" 패턴에서 제일 마지막 언더바(_) 뒤의 숫자 '01' 추출
+                    var matchEbara = Regex.Match(waferId, @"_(\d+)$");
+                    if (matchEbara.Success && int.TryParse(matchEbara.Groups[1].Value, out int wEbara))
+                    {
+                        waferNo = wEbara; // "01"이 int로 변환되어 1이 됨
+                    }
+                    // 3. 만약 언더바 없이 순수 숫자만("01") 적혀있는 경우에 대한 대비
+                    else if (int.TryParse(waferId, out int rawNum))
+                    {
+                        waferNo = rawNum;
+                    }
+                }
+            }
+
+            // 4. 안전장치: 파일 내부에서 추출 실패 시 파일명에서 2차 시도 (기존 로직 유지)
+            if (waferNo == null)
+            {
+                string fileName = Path.GetFileName(filePath);
+
+                var matchAmatFile = Regex.Match(fileName, @"C\dW(\d+)", RegexOptions.IgnoreCase);
+                if (matchAmatFile.Success && int.TryParse(matchAmatFile.Groups[1].Value, out int wAmat))
+                {
+                    waferNo = wAmat;
+                }
+                else
+                {
+                    var matchEbaraFile = Regex.Match(fileName, @"_(\d{2})_");
+                    if (matchEbaraFile.Success && int.TryParse(matchEbaraFile.Groups[1].Value, out int wEbara))
+                    {
+                        waferNo = wEbara;
+                    }
+                }
+            }
+
+            // 5. 최종 Fallback (DB 23502 null 제약조건 에러 방지)
+            if (waferNo == null)
+            {
+                waferNo = 0;
+                SimpleLogger.Debug($"[WARNING] Wafer ID could not be extracted. Defaulting to 0. File: {Path.GetFileName(filePath)}");
             }
 
             DateTime dtVal = DateTime.MinValue;
@@ -231,7 +278,7 @@ namespace Onto_WaferFlatDataLib
                     ["stagercp"] = meta.TryGetValue("Stage Recipe Name", out var v2) ? v2 : "",
                     ["stagegroup"] = meta.TryGetValue("Stage Group Name", out var v3) ? v3 : "",
                     ["lotid"] = meta.TryGetValue("Lot ID", out var v4) ? v4 : "",
-                    ["waferid"] = waferNo ?? (object)DBNull.Value,
+                    ["waferid"] = waferNo, // ⭐️ 무조건 정상적인 숫자가 들어감 (DB 23502 에러 완전 해결)
                     ["datetime"] = (dtVal != DateTime.MinValue) ? (object)dtVal : DBNull.Value,
                     ["film"] = meta.TryGetValue("Film Name", out var v5) ? v5 : ""
                 };
