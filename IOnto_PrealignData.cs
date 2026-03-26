@@ -100,7 +100,6 @@ namespace Onto_PrealignDataLib
                         _lastLen.TryGetValue(filePath, out prevLen);
                     }
 
-                    // [핵심 개선] FileShare.Delete 추가 및 Binary 초고속 읽기로 파일 점유시간 극소화
                     using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                     {
                         currLen = fs.Length;
@@ -120,6 +119,14 @@ namespace Onto_PrealignDataLib
                         bytesToRead = currLen - prevLen;
                         if (bytesToRead > 0)
                         {
+                            // [핵심 개선 1: OOM 방지] 한 번의 사이클에 최대 10MB까지만 읽도록 제한
+                            long maxChunkSize = 10 * 1024 * 1024; // 10MB
+                            bool isChunked = bytesToRead > maxChunkSize;
+                            if (isChunked)
+                            {
+                                bytesToRead = maxChunkSize;
+                            }
+
                             fileBuffer = new byte[bytesToRead];
                             fs.Seek(prevLen, SeekOrigin.Begin);
 
@@ -129,6 +136,27 @@ namespace Onto_PrealignDataLib
                                 int read = fs.Read(fileBuffer, totalRead, (int)bytesToRead - totalRead);
                                 if (read == 0) break;
                                 totalRead += read;
+                            }
+
+                            // [핵심 개선 2: 데이터 무결성 보장] 청크로 잘렸을 경우 줄바꿈(\n)까지만 유효 데이터로 자름
+                            if (isChunked)
+                            {
+                                int validLen = totalRead;
+                                for (int j = totalRead - 1; j >= 0; j--)
+                                {
+                                    if (fileBuffer[j] == (byte)'\n')
+                                    {
+                                        validLen = j + 1;
+                                        break;
+                                    }
+                                }
+
+                                if (validLen < totalRead && validLen > 0)
+                                {
+                                    bytesToRead = validLen;
+                                    Array.Resize(ref fileBuffer, validLen);
+                                }
+                                currLen = prevLen + bytesToRead; // 남은 데이터는 다음 턴에 읽도록 offset 세팅
                             }
                         }
                     }
@@ -162,16 +190,17 @@ namespace Onto_PrealignDataLib
 
             try
             {
-                // [핵심 개선] FileStream이 닫힌 후 메모리 상에서 안전하게 문자열 디코딩 및 파싱 (장비 충돌 완전 분리)
                 if (fileBuffer != null && bytesToRead > 0)
                 {
                     addedText = Encoding.GetEncoding(949).GetString(fileBuffer);
                 }
 
                 var rows = new List<Tuple<decimal, decimal, decimal, DateTime>>();
+                
+                // Regex 성능 향상을 위해 Compiled 옵션 추가
                 var rex = new Regex(
                     @"Xmm\s*([-\d.]+)\s*Ymm\s*([-\d.]+)\s*Notch\s*([-\d.]+)\s*Time\s*([\d\-:\s]+)",
-                    RegexOptions.IgnoreCase);
+                    RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
                 foreach (Match m in rex.Matches(addedText))
                 {
@@ -219,24 +248,32 @@ namespace Onto_PrealignDataLib
         {
             rows.Sort((a, b) => a.Item4.CompareTo(b.Item4));
 
-            var dt = new DataTable();
-            dt.Columns.Add("eqpid", typeof(string));
-            dt.Columns.Add("datetime", typeof(DateTime));
-            dt.Columns.Add("xmm", typeof(decimal));
-            dt.Columns.Add("ymm", typeof(decimal));
-            dt.Columns.Add("notch", typeof(decimal));
-            dt.Columns.Add("serv_ts", typeof(DateTime));
-
-            foreach (var r in rows)
+            // [핵심 개선 3: DB Timeout 방지] 데이터를 3000건씩 분할하여 DB로 배치 전송
+            int batchSize = 3000;
+            
+            for (int i = 0; i < rows.Count; i += batchSize)
             {
-                DateTime serv_kst = TimeSyncProvider.Instance.ToSynchronizedKst(r.Item4);
-                serv_kst = serv_kst.AddTicks(-(serv_kst.Ticks % TimeSpan.TicksPerSecond));
+                var batchRows = rows.GetRange(i, Math.Min(batchSize, rows.Count - i));
+                
+                var dt = new DataTable();
+                dt.Columns.Add("eqpid", typeof(string));
+                dt.Columns.Add("datetime", typeof(DateTime));
+                dt.Columns.Add("xmm", typeof(decimal));
+                dt.Columns.Add("ymm", typeof(decimal));
+                dt.Columns.Add("notch", typeof(decimal));
+                dt.Columns.Add("serv_ts", typeof(DateTime));
 
-                dt.Rows.Add(eqpid, r.Item4, r.Item1, r.Item2, r.Item3, serv_kst);
+                foreach (var r in batchRows)
+                {
+                    DateTime serv_kst = TimeSyncProvider.Instance.ToSynchronizedKst(r.Item4);
+                    serv_kst = serv_kst.AddTicks(-(serv_kst.Ticks % TimeSpan.TicksPerSecond));
+
+                    dt.Rows.Add(eqpid, r.Item4, r.Item1, r.Item2, r.Item3, serv_kst);
+                }
+
+                Upload(dt);
+                SimpleLogger.Event($"Batch uploaded: {dt.Rows.Count} rows.");
             }
-
-            Upload(dt);
-            SimpleLogger.Event($"rows={dt.Rows.Count} uploaded successfully.");
         }
 
         /*──────────────── DB Upload ───────────────────────*/
