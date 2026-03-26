@@ -196,7 +196,7 @@ namespace Onto_PrealignDataLib
                 }
 
                 var rows = new List<Tuple<decimal, decimal, decimal, DateTime>>();
-                
+
                 // Regex 성능 향상을 위해 Compiled 옵션 추가
                 var rex = new Regex(
                     @"Xmm\s*([-\d.]+)\s*Ymm\s*([-\d.]+)\s*Notch\s*([-\d.]+)\s*Time\s*([\d\-:\s]+)",
@@ -250,11 +250,11 @@ namespace Onto_PrealignDataLib
 
             // [핵심 개선 3: DB Timeout 방지] 데이터를 3000건씩 분할하여 DB로 배치 전송
             int batchSize = 3000;
-            
+
             for (int i = 0; i < rows.Count; i += batchSize)
             {
                 var batchRows = rows.GetRange(i, Math.Min(batchSize, rows.Count - i));
-                
+
                 var dt = new DataTable();
                 dt.Columns.Add("eqpid", typeof(string));
                 dt.Columns.Add("datetime", typeof(DateTime));
